@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Kotak — boîte à outils DA",
+  "short_name": "Kotak",
+  "description": "Boîte à outils DA : conversion tous formats, déclinaisons pub/réseaux, pipette couleur, récupération d'images, captures et téléchargement de médias. 100 % local.",
+  "version": "0.3.8",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Kotak — ouvrir le panneau",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "sidePanel",
+    "contextMenus",
+    "downloads",
+    "storage",
+    "alarms",
+    "scripting",
+    "offscreen",
+    "clipboardWrite",
+    "debugger",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyL7HTaOaLMoYTFxGYRgz2SX4bGqGFb6ncrfb25gBnUjlLjNdlfzpKxKzRpTGYrZ9vypoteOkXdl2BzIoY4D1gUYPkJi1OUNtSa8nV26SdljGBe/izm8xOUmo+V8qR8ba3IvWeohRUu8yaWlhTSf8x4E5mnS1acg45OX0NCf4BdjBs6qTBC7h8nreYqlAW0TV8GZhiqRvOFImzQagy3qpXu5qv3U6nA3+vLlvHmKcuqkFss4PGENDOSZXlfAhkzJuHDTzb2T5Yi18VXVLjKqtI1mGYueb384K5QXuJE/ycEe5GxZcWBlOEINb1VQHaN+O08DY6stgfq1gtSpU21T1/wIDAQAB"
+}

@@ -1,0 +1,1 @@
+var e=`kotak.inbox`;export{e as t};
