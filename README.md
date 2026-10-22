@@ -11,6 +11,8 @@ Quatre modules dans un panneau latéral. Tout tourne sur ton ordinateur : sans I
 
 ## Installer
 
+Rien à installer avant (ni git, ni outils de développement, ni Python) : une seule commande suffit.
+
 ### Mac
 Dans le Terminal :
 ```bash
@@ -25,7 +27,7 @@ irm https://raw.githubusercontent.com/adpzt/kotak/main/scripts/install-windows.p
 
 Le script installe :
 - l'extension dans **`~/Extension Kotak`** (Mac) ou **`%USERPROFILE%\Extension Kotak`** (Windows) ;
-- le **moteur Lien** (yt-dlp + ffmpeg, open source) : dans `~/Library/Application Support/Kotak` (Mac) ou `%LOCALAPPDATA%\Kotak` (Windows, avec un Python portable réservé à Kotak) ;
+- le **moteur Lien** (yt-dlp + ffmpeg, open source, avec un Python portable réservé à Kotak) : dans `~/Library/Application Support/Kotak` (Mac) ou `%LOCALAPPDATA%\Kotak` (Windows) ;
 - une tâche de fond qui récupère les nouvelles versions de Kotak toutes les 15 min, et de yt-dlp chaque jour.
 
 Puis, **une seule fois**, dans `chrome://extensions` (ou `brave://extensions`) : active le **Mode développeur**,

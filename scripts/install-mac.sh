@@ -2,28 +2,22 @@
 # Installe Kotak sur ce Mac, avec mises à jour automatiques depuis GitHub.
 #  - l'extension (dossier à charger dans Chrome / Brave) : ~/Extension Kotak
 #    (ou le dossier passé en argument — pas sur un disque externe, macOS y bloque les mises à jour)
-#  - le moteur Médias : yt-dlp + ffmpeg (open source) dans ~/Library/Application Support/Kotak
+#  - le moteur Médias : yt-dlp + ffmpeg (open source) + Python portable dans ~/Library/Application Support/Kotak
 #  - une tâche de fond (LaunchAgent) qui récupère les nouvelles versions toutes les 15 min
+# Rien à installer avant (ni git, ni outils de développement Apple) : curl et tar suffisent.
 # Désinstallation : bash ~/Library/Application\ Support/Kotak/uninstall.sh
 set -euo pipefail
 
-REPO_URL="${KOTAK_REPO:-https://github.com/adpzt/kotak.git}"
+REPO="${KOTAK_REPO:-adpzt/kotak}"
 EXT="${1:-${KOTAK_DIR:-$HOME/Extension Kotak}}"
 BASE="$HOME/Library/Application Support/Kotak"
 BIN="$BASE/bin"
+PY="$BASE/python"
+PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.12.7+20241016"
 LABEL="com.kotak.updater"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 # Identifiant fixe de l'extension (clé publique du manifeste) : seul Kotak peut lancer le moteur.
 EXT_ID="pgimopnhknnafkfghffffkjckckedngg"
-
-if ! command -v git >/dev/null 2>&1 || ! git --version >/dev/null 2>&1; then
-  echo "❌ git est nécessaire. Lance : xcode-select --install, puis relance ce script."
-  exit 1
-fi
-if ! /usr/bin/python3 -c 'import sys' >/dev/null 2>&1; then
-  echo "❌ Python 3 (outils de ligne de commande Apple) est nécessaire. Lance : xcode-select --install"
-  exit 1
-fi
 
 # ---------- Ancienne version « Atelier » ----------
 if [ -f "$HOME/Library/LaunchAgents/com.atelier.updater.plist" ]; then
@@ -37,13 +31,19 @@ mkdir -p "$BASE" "$BIN" "$HOME/Library/LaunchAgents" "$(dirname "$EXT")"
 
 # ---------- Extension ----------
 echo "→ Téléchargement de l'extension dans : $EXT"
-if [ -d "$EXT/.git" ]; then
-  git -C "$EXT" remote set-url origin "$REPO_URL"
-  git -C "$EXT" fetch --depth 1 --quiet origin release
-  git -C "$EXT" reset --hard --quiet origin/release
-else
-  rm -rf "$EXT"
-  git clone --quiet --depth 1 --branch release --single-branch "$REPO_URL" "$EXT"
+STAGE=$(mktemp -d)
+curl -fsSL "https://github.com/$REPO/archive/refs/heads/release.tar.gz" | tar -xzf - -C "$STAGE" --strip-components 1
+mkdir -p "$EXT"
+rsync -a --delete "$STAGE/" "$EXT/"   # retire aussi l'ancien dossier .git des installations faites avec git
+rm -rf "$STAGE"
+
+# Python portable réservé à Kotak : celui de macOS exige les outils de développement Apple.
+if [ ! -x "$PY/bin/python3" ]; then
+  echo "→ Téléchargement de Python (portable, réservé à Kotak)…"
+  PYARCH=$([ "$(uname -m)" = "x86_64" ] && echo "x86_64" || echo "aarch64")
+  rm -rf "$PY"
+  mkdir -p "$PY"
+  curl -fsSL "$PY_URL-$PYARCH-apple-darwin-install_only.tar.gz" | tar -xzf - -C "$PY" --strip-components 1
 fi
 
 # ---------- Moteur Médias : yt-dlp + ffmpeg ----------
@@ -82,7 +82,7 @@ done
 HOST="$BASE/kotak-engine"
 cat > "$HOST" <<EOH
 #!/bin/bash
-exec /usr/bin/python3 "$EXT/host/kotak_host.py" "\$@"
+exec "$PY/bin/python3" "$EXT/host/kotak_host.py" "\$@"
 EOH
 chmod +x "$HOST"
 
@@ -109,11 +109,17 @@ cat > "$BASE/update.sh" <<EOS
 # Appelé par launchd toutes les 15 min : nouvelle version de Kotak, et de yt-dlp une fois par jour.
 EXT="$EXT"
 BIN="$BIN"
-if cd "\$EXT" 2>/dev/null && git fetch --depth 1 --quiet origin release; then
-  if [ "\$(git rev-parse HEAD)" != "\$(git rev-parse origin/release)" ]; then
-    git reset --hard --quiet origin/release && git clean -fdq
-    echo "\$(date '+%Y-%m-%d %H:%M') Kotak : \$(grep '"version"' manifest.json | tr -d ' ,')"
+version() { sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -1; }
+REMOTE=\$(curl -fsSL "https://raw.githubusercontent.com/$REPO/release/manifest.json" | version)
+LOCAL=\$(version < "\$EXT/manifest.json" 2>/dev/null)
+if [ -n "\$REMOTE" ] && [ "\$REMOTE" != "\$LOCAL" ]; then
+  TMP=\$(mktemp -d)
+  if curl -fsSL "https://github.com/$REPO/archive/refs/heads/release.tar.gz" | tar -xzf - -C "\$TMP" --strip-components 1 \\
+     && [ -f "\$TMP/manifest.json" ]; then
+    rsync -a --delete "\$TMP/" "\$EXT/"
+    echo "\$(date '+%Y-%m-%d %H:%M') Kotak : \$LOCAL → \$REMOTE"
   fi
+  rm -rf "\$TMP"
 fi
 # yt-dlp suit les changements des sites : vérification quotidienne de la dernière version.
 STAMP="$BASE/.ytdlp-check"
