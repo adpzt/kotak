@@ -11,6 +11,7 @@ import { mountNav } from './nav';
 import { mountColors } from './modules/colors';
 import { mountGrab } from './modules/grab';
 import { mountMedia } from './modules/media';
+import { mountVideos } from './components/videos';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 
@@ -18,6 +19,7 @@ async function boot() {
   store.init(await loadSettings());
   $('version').textContent = `v${chrome.runtime.getManifest().version}`;
   mountDropzone($('dropzone'));
+  await mountVideos($('videos'));
   mountCompare($('preview'));
   mountSettings($('settings'));
   mountQueue($('queue'));

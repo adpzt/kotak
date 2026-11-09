@@ -1854,3 +1854,51 @@ body:not([data-module='grab']) #grab-footer {
 .input.is-invalid {
   border-color: var(--bad);
 }
+
+/* ---------- Vidéos (compression dans Convertir) ---------- */
+.vlist {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.vrow__main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.vrow__ph {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.vrow__meta {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.vrow__err {
+  color: var(--bad);
+  white-space: normal;
+}
+.vrow .row__info {
+  flex-wrap: wrap;
+}
+.vrow .job__bar {
+  margin: 8px 0 0;
+}
+.vrow__note {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.vrow__note--warn {
+  color: var(--warn, var(--bad));
+}
+.vsettings {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.videos-card .note {
+  margin: 10px 0 0;
+}

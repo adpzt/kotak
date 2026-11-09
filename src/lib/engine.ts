@@ -20,6 +20,34 @@ export interface ProbeInfo {
   maxHeight: number | null;
   hasVideo: boolean;
   hasAudio: boolean;
+  /** Poids des flux proposés par le site (estimation avant téléchargement). */
+  formats?: {
+    video: { h: number; h264: boolean; size: number; muxed: boolean; hls?: boolean; pref?: number }[];
+    audio: { size: number; aac: boolean; abr: number } | null;
+  };
+}
+
+/** Vidéo déposée dans le panneau, analysée par ffprobe. */
+export interface VideoInfo {
+  width: number;
+  height: number;
+  fps: number;
+  duration: number;
+  codec: string;
+  hdr: boolean;
+  tenBit: boolean;
+  audio: string | null;
+  audioBitrate: number;
+  size: number;
+}
+
+export interface CompressOptions {
+  upload: string;
+  /** Poids visé, en octets. */
+  target: number;
+  codec: 'h264' | 'hevc';
+  /** Petit côté maximum (0 = taille d'origine). */
+  maxSide: number;
 }
 
 export interface DownloadOptions {
@@ -34,6 +62,8 @@ export interface DownloadOptions {
   start: string;
   end: string;
   cookies: string;
+  /** Réduction du poids en % (0 = pas de compression). */
+  compress: number;
 }
 
 export interface JobEvent {
@@ -45,6 +75,7 @@ export interface JobEvent {
   file?: string;
   size?: number;
   message?: string;
+  note?: string;
 }
 
 type Pending = {
@@ -131,6 +162,18 @@ export function engineError(): string {
   return lastError;
 }
 
+/** Morceaux de 4 Mo : bien sous la limite des messages vers le moteur, peu d'allers-retours. */
+const CHUNK = 4 * 1024 * 1024;
+
+function readBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).slice(String(r.result).indexOf(',') + 1));
+    r.onerror = () => reject(r.error ?? new Error('Lecture du fichier impossible'));
+    r.readAsDataURL(blob);
+  });
+}
+
 export const engine = {
   probe: (url: string, cookies: string) => request<ProbeInfo>('probe', { url, cookies }).promise,
   download(opts: DownloadOptions, onEvent: (e: JobEvent) => void) {
@@ -143,4 +186,20 @@ export const engine = {
   readFile: (file: string) => request<Uint8Array>('read_file', { file }).promise,
   /** Image d'une vidéo en ligne à un instant donné, en pleine résolution (meilleur flux). */
   frame: (url: string, time: number, cookies: string) => request<Uint8Array>('frame', { url, time, cookies }).promise,
+
+  /** Copie un fichier du panneau vers le moteur (par morceaux) ; renvoie son jeton. */
+  async upload(file: Blob, name: string, onProgress?: (ratio: number) => void): Promise<string> {
+    const { upload } = await request<{ upload: string }>('upload_begin', { name }).promise;
+    for (let pos = 0; pos < file.size; pos += CHUNK) {
+      const data = await readBase64(file.slice(pos, pos + CHUNK));
+      await request('upload_chunk', { upload, data }).promise;
+      onProgress?.(Math.min(1, (pos + CHUNK) / file.size));
+    }
+    return upload;
+  },
+  videoInfo: (upload: string) => request<VideoInfo>('video_info', { upload }).promise,
+  compress(opts: CompressOptions, onEvent: (e: JobEvent) => void) {
+    return request<JobEvent>('compress', opts, onEvent);
+  },
+  discard: (upload: string) => request('discard', { upload }).promise.catch(() => undefined),
 };

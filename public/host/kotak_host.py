@@ -174,7 +174,32 @@ def cmd_probe(msg):
         "maxHeight": max(heights) if heights else (info.get("height") or None),
         "hasVideo": bool(heights) or bool(info.get("height")),
         "hasAudio": has_audio,
+        "formats": format_sizes(formats, info.get("duration")),
     }
+
+
+def format_sizes(formats, duration):
+    """Poids de chaque flux (pour estimer le fichier avant téléchargement) :
+    vidéo [{h, h264, size}] et meilleur audio seul {size, aac}."""
+    def size_of(f):
+        size = f.get("filesize") or f.get("filesize_approx")
+        if not size and f.get("tbr") and duration:
+            size = f["tbr"] * 1000 / 8 * duration
+        return int(size or 0)
+
+    video, audio = [], None
+    for f in formats:
+        size = size_of(f)
+        vcodec = f.get("vcodec") or "none"
+        acodec = f.get("acodec") or "none"
+        if vcodec != "none" and size:
+            video.append({"h": f.get("height") or 0, "h264": vcodec.startswith(("avc", "h264")), "size": size, "muxed": acodec != "none",
+                          "hls": "m3u8" in (f.get("protocol") or ""), "pref": f.get("preference") or 0})
+        elif vcodec == "none" and acodec != "none" and size:
+            cand = {"size": size, "aac": acodec.startswith("mp4a"), "abr": f.get("abr") or f.get("tbr") or 0}
+            if audio is None or cand["abr"] > audio["abr"]:
+                audio = cand
+    return {"video": video, "audio": audio}
 
 
 def cmd_choose_dir(msg):
@@ -241,9 +266,10 @@ PROGRESS_RE = re.compile(r"^ATL\s+([\d.]+)%?\|([^|]*)\|(.*)$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def spawn(job_id, args):
+def spawn(job_id, args, cwd=None):
     proc = subprocess.Popen(
         args,
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -270,10 +296,11 @@ def probe_media(path):
     return v or {}, a, dur
 
 
-def run_ffmpeg(job_id, args, duration, stage):
-    """Lance ffmpeg en suivant son avancement (-progress)."""
+def run_ffmpeg(job_id, args, duration, stage, span=(0.0, 100.0), cwd=None):
+    """Lance ffmpeg en suivant son avancement (-progress).
+    span = (début, largeur) : part de la barre de progression couverte par cette étape."""
     send({"id": job_id, "type": "stage", "stage": stage})
-    proc = spawn(job_id, [FFMPEG, "-hide_banner", "-nostats", "-progress", "pipe:1", "-y"] + args)
+    proc = spawn(job_id, [FFMPEG, "-hide_banner", "-nostats", "-progress", "pipe:1", "-y"] + args, cwd=cwd)
     err_lines = []
 
     def drain_err():
@@ -286,7 +313,8 @@ def run_ffmpeg(job_id, args, duration, stage):
         if line.startswith("out_time_us=") and duration > 0:
             try:
                 us = int(line.split("=")[1])
-                send({"id": job_id, "type": "progress", "percent": max(0.0, min(100.0, us / 1e6 / duration * 100)), "stage": stage})
+                done = max(0.0, min(1.0, us / 1e6 / duration))
+                send({"id": job_id, "type": "progress", "percent": span[0] + done * span[1], "stage": stage})
             except ValueError:
                 pass
     proc.wait()
@@ -429,7 +457,20 @@ def cmd_download(msg):
             height = int(v.get("height") or 0)
             ext = container
             out = os.path.join(tmp, "out." + ext)
-            if codec == "original":
+            compress = int(msg.get("compress") or 0)
+            if compress > 0 and codec != "prores" and container != "webm":
+                # Poids de référence = celui du fichier qu'on aurait obtenu sans compression
+                # (même calcul que l'estimation affichée dans le panneau).
+                if codec == "original" or (codec == "h264" and vcodec == "h264"):
+                    ref = os.path.getsize(src)
+                else:
+                    a_bits = (a.get("bit_rate") and int(a["bit_rate"]) or 256_000) if a else 0
+                    ref = (int(video_bitrate(height, codec)[:-1]) * 1_000_000 + a_bits) * dur / 8
+                target = int(ref * (100 - min(95, compress)) / 100)
+                compress_video(job_id, src, out, target, "hevc" if codec == "hevc" else "h264", strip=False)
+                final_src = out
+                final_ext = ext
+            elif codec == "original":
                 final_src = src
                 final_ext = os.path.splitext(src)[1].lstrip(".")
             else:
@@ -505,12 +546,201 @@ def cmd_frame(msg):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- compression vidéo
+# Encodage en deux passes vers un poids cible : la 1re passe analyse la vidéo, la 2e répartit
+# le débit là où l'image en a besoin. C'est la meilleure qualité possible pour un poids donné.
+HDR_TRC = ("arib-std-b67", "smpte2084")
+
+
+def video_facts(path):
+    """Caractéristiques utiles d'une vidéo (ffprobe)."""
+    v, a, dur = probe_media(path)
+    if not v:
+        raise RuntimeError("Aucune piste vidéo lisible dans ce fichier")
+    w, hgt = int(v.get("width") or 0), int(v.get("height") or 0)
+    rot = 0
+    for sd in v.get("side_data_list") or []:
+        if "rotation" in sd:
+            rot = int(sd.get("rotation") or 0)
+    rot = rot or int((v.get("tags") or {}).get("rotate") or 0)
+    if abs(rot) % 180 == 90:
+        w, hgt = hgt, w
+    fps = 30.0
+    try:
+        num, den = (v.get("avg_frame_rate") or v.get("r_frame_rate") or "30/1").split("/")
+        fps = float(num) / float(den) if float(den) else 30.0
+    except (ValueError, ZeroDivisionError):
+        pass
+    pix = v.get("pix_fmt") or ""
+    hdr = (v.get("color_transfer") or "") in HDR_TRC
+    return {
+        "width": w,
+        "height": hgt,
+        "fps": round(fps, 3) if 0 < fps < 400 else 30.0,
+        "duration": dur,
+        "codec": v.get("codec_name") or "",
+        "hdr": hdr,
+        "tenBit": "10" in pix or "12" in pix,
+        "audio": (a or {}).get("codec_name"),
+        "audioBitrate": int((a or {}).get("bit_rate") or 0),
+        "size": os.path.getsize(path),
+        "_v": v,
+    }
+
+
+def _scale_filter(max_side):
+    """Réduit le petit côté à max_side (sans jamais agrandir) ; dimensions paires pour l'encodeur."""
+    if not max_side:
+        return "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    n = int(max_side)
+    return ("scale=w='if(gte(iw,ih),-2,trunc(min(iw,%d)/2)*2)':h='if(gte(iw,ih),trunc(min(ih,%d)/2)*2,-2)'" % (n, n))
+
+
+def compress_video(job_id, src, out, target, codec="h264", max_side=0, strip=True, span=(0.0, 100.0)):
+    """Compresse src vers out (mp4/mov/mkv) en visant `target` octets. Renvoie une note éventuelle."""
+    facts = video_facts(src)
+    dur = facts["duration"]
+    if dur <= 0:
+        raise RuntimeError("Durée de la vidéo illisible")
+    note = ""
+    if facts["hdr"] and codec != "hevc":
+        # Le H.264 8 bits délaverait une vidéo HDR (iPhone…) : on garde HEVC 10 bits.
+        codec = "hevc"
+        note = "Vidéo HDR : gardée en HEVC 10 bits pour préserver les couleurs"
+
+    total = target * 8 * 0.97 / dur  # bits/s, 3 % de marge pour le conteneur
+    a_codec, a_br = facts["audio"], facts["audioBitrate"]
+    if not a_codec:
+        audio_args, audio_br = ["-an"], 0
+    elif a_codec == "aac" and a_br and a_br <= 0.15 * total:
+        audio_args, audio_br = ["-c:a", "copy"], a_br
+    else:
+        audio_br = 160_000 if total > 3_000_000 else 128_000 if total > 900_000 else 96_000 if total > 300_000 else 64_000
+        audio_args = ["-c:a", "aac", "-b:a", str(audio_br)]
+    vbr = int(max(80_000, total - audio_br))
+
+    pixels = facts["width"] * facts["height"]
+    heavy = pixels > 2_100_000 or dur > 600  # au-delà du 1080p ou de 10 min : réglage plus rapide
+    vf = _scale_filter(max_side)
+    tag = ["-tag:v", "hvc1"] if out.lower().endswith((".mp4", ".mov", ".m4v")) else []  # lisible par QuickTime
+    tmp = tempfile.mkdtemp(prefix="kotak-2p-")
+    try:
+        if codec == "hevc":
+            preset = "fast" if heavy else "medium"
+            pix = "yuv420p10le" if (facts["hdr"] or facts["tenBit"]) else "yuv420p"
+            v = facts["_v"]
+            color = []
+            if facts["hdr"]:
+                color = ["colorprim=%s" % (v.get("color_primaries") or "bt2020"),
+                         "transfer=%s" % v.get("color_transfer"),
+                         "colormatrix=%s" % (v.get("color_space") or "bt2020nc"),
+                         "hdr-opt=1", "repeat-headers=1"]
+
+            def venc(pass_no, rate):
+                params = ["pass=%d" % pass_no, "stats=x265.log", "log-level=error"] + (["no-slow-firstpass=1"] if pass_no == 1 else []) + color
+                return ["-c:v", "libx265", "-preset", preset, "-b:v", str(rate), "-pix_fmt", pix] + tag + ["-x265-params", ":".join(params)]
+        else:
+            preset = "medium" if heavy else "slow"
+
+            def venc(pass_no, rate):
+                return ["-c:v", "libx264", "-preset", preset, "-b:v", str(rate), "-pass", str(pass_no), "-passlogfile", "x264",
+                        "-pix_fmt", "yuv420p", "-profile:v", "high"]
+
+        inp = ["-i", os.path.abspath(src), "-map", "0:v:0", "-vf", vf]
+        run_ffmpeg(job_id, inp + venc(1, vbr) + ["-an", "-f", "null", os.devnull], dur, "Analyse (passe 1/2)",
+                   span=(span[0], span[1] * 0.35), cwd=tmp)
+        meta = ["-map_metadata", "-1"] if strip else ["-map_metadata", "0"]
+        fast = ["-movflags", "+faststart"] if out.lower().endswith((".mp4", ".mov", ".m4v")) else []
+        dest = os.path.abspath(out)
+        for attempt in (1, 2, 3):
+            run_ffmpeg(job_id, inp + ["-map", "0:a:0?"] + venc(2, vbr) + audio_args + meta + fast + [dest], dur,
+                       "Compression (passe 2/2)" if attempt == 1 else "Ajustement du poids",
+                       span=(span[0] + span[1] * 0.35, span[1] * 0.65), cwd=tmp)
+            size = os.path.getsize(dest)
+            if size <= target * 1.01 or attempt == 3:
+                break
+            # Au-dessus de la cible (images très granuleuses) : 2e passe refaite avec un débit corrigé.
+            vbr = int(max(60_000, vbr * (target / size) * 0.96))
+        return note
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# Fichiers glissés dans le panneau : envoyés par morceaux, gardés le temps de la session.
+_uploads = {}  # jeton -> {path, dir, name}
+_uploads_lock = threading.Lock()
+
+
+def cmd_upload_begin(msg):
+    name = safe_name(os.path.basename(msg.get("name") or "video.mp4"))
+    d = tempfile.mkdtemp(prefix="kotak-up-")
+    path = os.path.join(d, name)
+    open(path, "wb").close()
+    token = os.path.basename(d)
+    with _uploads_lock:
+        _uploads[token] = {"path": path, "dir": d, "name": name}
+    return {"upload": token}
+
+
+def _upload(token):
+    with _uploads_lock:
+        up = _uploads.get(token or "")
+    if not up:
+        raise RuntimeError("Fichier introuvable : redépose la vidéo")
+    return up
+
+
+def cmd_upload_chunk(msg):
+    up = _upload(msg.get("upload"))
+    with open(up["path"], "ab") as f:
+        f.write(base64.b64decode(msg.get("data") or ""))
+    return {"size": os.path.getsize(up["path"])}
+
+
+def cmd_video_info(msg):
+    info = video_facts(_upload(msg.get("upload"))["path"])
+    info.pop("_v", None)
+    return info
+
+
+def cmd_discard(msg):
+    with _uploads_lock:
+        up = _uploads.pop(msg.get("upload") or "", None)
+    if up:
+        shutil.rmtree(up["dir"], ignore_errors=True)
+    return {}
+
+
+def size_label(n):
+    # Même unité que le système : Finder compte 1 Mo = 1 000 000 octets, l'Explorateur Windows 1 048 576.
+    mb = n / (1024 * 1024 if WINDOWS else 1_000_000)
+    return ("%.1f Mo" % mb).replace(".", ",")
+
+
+def cmd_compress(msg):
+    """Compresse une vidéo déposée dans le panneau ; le résultat va dans le dossier Kotak."""
+    job_id = msg["id"]
+    try:
+        up = _upload(msg.get("upload"))
+        stem = safe_name(os.path.splitext(up["name"])[0])
+        tmp_out = os.path.join(up["dir"], "kotak-out.mp4")
+        note = compress_video(job_id, up["path"], tmp_out, int(msg["target"]), msg.get("codec", "h264"),
+                              int(msg.get("maxSide") or 0), strip=True)
+        size = os.path.getsize(tmp_out)
+        dest = unique_path(download_dir(), "%s (%s).mp4" % (stem, size_label(size)))
+        shutil.move(tmp_out, dest)
+        send({"id": job_id, "type": "done", "file": dest, "size": size, "note": note})
+    finally:
+        _jobs.pop(job_id, None)
+
+
 def cmd_read_file(msg):
     send_file(msg["id"], msg["file"])
 
 
-SIMPLE = {"status": cmd_status, "probe": cmd_probe, "choose_dir": cmd_choose_dir, "reveal": cmd_reveal, "open": cmd_open, "cancel": cmd_cancel}
-STREAMING = {"download": cmd_download, "frame": cmd_frame, "read_file": cmd_read_file}
+SIMPLE = {"status": cmd_status, "probe": cmd_probe, "choose_dir": cmd_choose_dir, "reveal": cmd_reveal, "open": cmd_open, "cancel": cmd_cancel,
+          "upload_begin": cmd_upload_begin, "upload_chunk": cmd_upload_chunk, "video_info": cmd_video_info, "discard": cmd_discard}
+STREAMING = {"download": cmd_download, "frame": cmd_frame, "read_file": cmd_read_file, "compress": cmd_compress}
 
 
 def handle(msg):
@@ -543,6 +773,9 @@ def main():
     # Panneau fermé : on laisse finir les téléchargements en cours avant de quitter.
     for th in threads:
         th.join()
+    with _uploads_lock:
+        for up in _uploads.values():
+            shutil.rmtree(up["dir"], ignore_errors=True)
 
 
 if __name__ == "__main__":

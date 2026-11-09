@@ -4,6 +4,8 @@ import { toast } from './toast';
 import { INBOX_KEY, type InboxEntry } from '../../lib/inbox';
 import { ACCEPTED_EXT } from '../../core/decoders';
 import { currentModule, showModule } from '../nav';
+import { addVideos } from './videos';
+import { looksLikeVideo } from '../../lib/video';
 
 const IMAGE_EXT = ACCEPTED_EXT;
 const ACCEPT_LIST = '.svg,.svgz,.ico,.heic,.heif,.hif,.tif,.tiff,.psd,.psb,.jxl,.qoi,.tga,.pdf,.cr2,.cr3,.crw,.nef,.nrw,.arw,.srf,.sr2,.dng,.raf,.orf,.rw2,.rwl,.pef,.ptx,.srw,.x3f,.3fr,.fff,.iiq,.mos,.mef,.mrw,.erf,.kdc,.dcr';
@@ -24,6 +26,17 @@ type NamedBlob = { blob: Blob; name: string };
 
 function looksLikeImage(f: File): boolean {
   return f.type.startsWith('image/') || f.type === 'application/pdf' || IMAGE_EXT.test(f.name);
+}
+
+/** Vidéos vers la compression vidéo, le reste vers le convertisseur d'images. */
+function addFiles(files: File[]) {
+  const vids = files.filter(looksLikeVideo);
+  const imgs = files.filter((f) => !looksLikeVideo(f) && looksLikeImage(f));
+  if (vids.length) {
+    if (currentModule() !== 'convert') showModule('convert');
+    addVideos(vids);
+  }
+  return imgs;
 }
 
 /** Les fichiers vont toujours au convertisseur (qu'on affiche s'il ne l'est pas). */
@@ -132,9 +145,9 @@ async function drainInbox() {
 // ---------- Montage ----------
 
 export function mountDropzone(root: HTMLElement) {
-  const input = h('input', { type: 'file', multiple: true, accept: 'image/*,application/pdf,' + ACCEPT_LIST, hidden: true });
+  const input = h('input', { type: 'file', multiple: true, accept: 'image/*,application/pdf,video/*,.mkv,.mts,.m2ts,.mxf,' + ACCEPT_LIST, hidden: true });
   input.addEventListener('change', () => {
-    const files = Array.from(input.files ?? []).filter(looksLikeImage);
+    const files = addFiles(Array.from(input.files ?? []));
     addAndReport(files.map((f) => ({ blob: f, name: f.name })));
     input.value = '';
   });
@@ -144,16 +157,17 @@ export function mountDropzone(root: HTMLElement) {
     'button',
     { class: 'drop-hero', type: 'button', onclick: browse },
     h('span', { class: 'drop-hero__icon' }, icon('upload', 26)),
-    h('span', { class: 'drop-hero__title' }, 'Glisse tes images ici'),
+    h('span', { class: 'drop-hero__title' }, 'Glisse tes images ou vidéos ici'),
     h('span', { class: 'drop-hero__sub' }, 'ou ', h('u', {}, 'parcours'), ', colle avec ', h('kbd', {}, '⌘V'), ', ou clic droit sur une image du web'),
     h('span', { class: 'drop-hero__formats' }, 'JPG · PNG · WebP · AVIF · GIF · SVG · HEIC · TIFF · PSD · PDF · RAW · JPEG XL · BMP · ICO · TGA · QOI'),
+    h('span', { class: 'drop-hero__formats' }, 'Vidéos à compresser : MP4 · MOV · MKV · WebM · AVI…'),
   );
 
   const compact = h(
     'button',
     { class: 'drop-compact', type: 'button', onclick: browse },
     icon('plus', 15),
-    h('span', {}, 'Ajouter des images'),
+    h('span', {}, 'Ajouter des images ou vidéos'),
     h('span', { class: 'drop-compact__hint' }, 'ou glisser / ⌘V'),
   );
 
@@ -196,7 +210,9 @@ export function mountDropzone(root: HTMLElement) {
     overlay.classList.remove('is-active');
     const dt = e.dataTransfer;
     if (!dt) return;
-    const files = (await filesFromDataTransfer(dt)).filter(looksLikeImage);
+    const all = await filesFromDataTransfer(dt);
+    const files = addFiles(all);
+    if (all.some(looksLikeVideo) && !files.length) return;
     if (files.length) {
       addAndReport(files.map((f) => ({ blob: f, name: f.name })));
       return;
@@ -209,7 +225,12 @@ export function mountDropzone(root: HTMLElement) {
   document.addEventListener('paste', (e) => {
     const target = e.target as HTMLElement | null;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
-    const files = Array.from(e.clipboardData?.files ?? []).filter(looksLikeImage);
+    const pasted = Array.from(e.clipboardData?.files ?? []);
+    const files = addFiles(pasted);
+    if (pasted.some(looksLikeVideo)) {
+      e.preventDefault();
+      if (!files.length) return;
+    }
     if (files.length) {
       e.preventDefault();
       addAndReport(

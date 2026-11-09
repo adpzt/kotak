@@ -6,8 +6,9 @@ import { store } from '../store';
 import { currentModule, onModuleChange, showModule } from '../nav';
 import { engine, engineError, engineStatus, type DownloadOptions, type EngineStatus, type JobEvent, type ProbeInfo } from '../../lib/engine';
 import { formatBytes } from '../../lib/files';
+import { estimateDownload, formatMB } from '../../lib/video';
 
-type Opts = Omit<DownloadOptions, 'url'>;
+type Opts = Omit<DownloadOptions, 'url'> & { compressOn: boolean };
 
 const KEY = 'kotak.media';
 const WINDOWS = /win/i.test((navigator as Navigator & { userAgentData?: { platform: string } }).userAgentData?.platform ?? navigator.platform);
@@ -22,6 +23,8 @@ const DEFAULTS: Opts = {
   start: '',
   end: '',
   cookies: '',
+  compress: 30,
+  compressOn: false,
 };
 
 const QUALITIES: [number, string][] = [
@@ -251,7 +254,31 @@ export async function mountMedia(root: HTMLElement) {
     }
   });
 
-  const videoBlock = h('div', { class: 'stack' }, field('Qualité', qualitySel.el), field('Format', containerSeg.el), field('Codec', codecSel.el, codecNote));
+  // Compression (après téléchargement, en deux passes, vers le poids choisi).
+  const compressToggle = h('input', { type: 'checkbox' });
+  compressToggle.addEventListener('change', () => {
+    opts.compressOn = compressToggle.checked;
+    save();
+    renderOptions();
+  });
+  const compressSlider = h('input', { type: 'range', min: 5, max: 90, step: 1, class: 'range', 'aria-label': 'Compression' });
+  compressSlider.addEventListener('input', () => {
+    opts.compress = Number(compressSlider.value);
+    save();
+    renderOptions();
+  });
+  const compressValue = h('span', { class: 'range__value' });
+  const compressHint = h('p', { class: 'field__hint' });
+  const compressDetail = h('div', { class: 'stack' }, h('div', { class: 'range-wrap' }, compressSlider, compressValue), compressHint);
+  const compressBlock = h(
+    'div',
+    { class: 'field' },
+    h('label', { class: 'check' }, compressToggle, h('span', { class: 'check__box' }, icon('check', 12)), h('span', {}, 'Compresser la vidéo (meilleure qualité possible pour le poids choisi)')),
+    compressDetail,
+  );
+  const estimateLine = h('p', { class: 'field__hint media-estimate' });
+
+  const videoBlock = h('div', { class: 'stack' }, field('Qualité', qualitySel.el), field('Format', containerSeg.el), field('Codec', codecSel.el, codecNote), compressBlock);
   const audioBlock = h('div', { class: 'stack' }, field('Format audio', audioSeg.el), h('div', { class: 'mp3-only' }, field('Débit', bitrateSel.el)), h('div', { class: 'pcm-only' }, field('Profondeur', depthSeg.el)));
   const optionsCard = h(
     'section',
@@ -261,6 +288,7 @@ export async function mountMedia(root: HTMLElement) {
     videoBlock,
     audioBlock,
     clipBlock,
+    estimateLine,
     h('details', { class: 'advanced' },
       h('summary', {}, 'Session et dossier'),
       field('Session (contenus privés, Instagram, YouTube restreint)', cookiesSel.el, h('p', { class: 'field__hint' }, 'Utilise ta connexion du navigateur choisi. macOS peut demander l\'accès au trousseau la première fois.')),
@@ -335,9 +363,39 @@ export async function mountMedia(root: HTMLElement) {
         : opts.codec === 'prores'
           ? 'Toujours en .mov, son en PCM. Idéal pour le montage, environ 10× plus lourd.'
           : 'Converti avec l\'encodeur matériel du Mac (rapide).';
+    const canCompress = opts.mode === 'video' && opts.codec !== 'prores' && opts.container !== 'webm';
+    const compressing = canCompress && opts.compressOn;
+    compressBlock.hidden = !canCompress;
+    compressToggle.checked = opts.compressOn;
+    compressDetail.hidden = !opts.compressOn;
+    if (document.activeElement !== compressSlider) compressSlider.value = String(opts.compress);
+    compressSlider.style.setProperty('--fill', `${((opts.compress - 5) / 85) * 100}%`);
+    compressValue.textContent = `${opts.compress} %`;
+    const est = estimate();
+    compressHint.textContent = est
+      ? `≈ ${formatMB(est)} → ≈ ${formatMB(est * (1 - opts.compress / 100))}. ${opts.codec === 'hevc' ? 'En HEVC.' : 'En H.264 (vidéos HDR gardées en HEVC 10 bits).'}`
+      : 'Le poids final sera réduit de ce pourcentage.';
+    estimateLine.hidden = !est || opts.mode === 'image';
+    estimateLine.textContent = est
+      ? `Poids estimé : ≈ ${formatMB(compressing ? est * (1 - opts.compress / 100) : est)}${compressing ? ` (au lieu de ≈ ${formatMB(est)})` : ''}`
+      : '';
     (dlBtn.lastElementChild as HTMLElement).textContent =
-      (analyzed.length > 1 ? `Télécharger les ${analyzed.length}` : 'Télécharger') + (clip && opts.mode !== 'image' ? ` · passage ${clip}` : '');
+      (analyzed.length > 1 ? `Télécharger les ${analyzed.length}` : 'Télécharger') + (clip && opts.mode !== 'image' ? ` · passage ${clip}` : '') + (compressing ? ` · −${opts.compress} %` : '');
     dlBtn.disabled = analyzed.length === 0;
+  }
+
+  /** Poids total estimé des liens analysés (octets), avant compression ; null si inconnu. */
+  function estimate(): number | null {
+    if (!analyzed.length) return null;
+    let clipSeconds: number | null = null;
+    if (clipOn && analyzed.length === 1) {
+      const a = parseTime(opts.start) ?? 0;
+      const b = parseTime(opts.end) ?? analyzed[0].duration ?? null;
+      if (b !== null && b > a) clipSeconds = b - a;
+    }
+    const sizes = analyzed.map((i) => estimateDownload(i, opts, clipSeconds));
+    if (sizes.some((x) => x === null)) return null;
+    return (sizes as number[]).reduce((a, b) => a + b, 0) || null;
   }
 
   /** « 1:30 → 2:00 » si un passage valide est demandé, sinon null. */
@@ -423,7 +481,10 @@ export async function mountMedia(root: HTMLElement) {
   function startJob(info: ProbeInfo, start: string, end: string) {
     const job: Job = { key: `j${jobs.length + 1}`, info, opts: { ...opts, start, end }, requestId: null, state: 'running', event: { type: 'stage', stage: 'Préparation' } };
     jobs.unshift(job);
-    const req = engine.download({ url: info.url, ...job.opts }, (e) => {
+    const { compressOn, ...rest } = job.opts;
+    const compress = compressOn && rest.mode === 'video' && rest.codec !== 'prores' && rest.container !== 'webm' ? rest.compress : 0;
+    job.opts.compress = compress;
+    const req = engine.download({ url: info.url, ...rest, compress }, (e) => {
       job.event = { ...job.event, ...e };
       renderJob(job);
     });
@@ -454,7 +515,8 @@ export async function mountMedia(root: HTMLElement) {
     if (!job.el) return renderQueue();
     const e = job.event;
     const passage = job.opts.start || job.opts.end ? ` · ${fmtTime(+job.opts.start || 0)}→${job.opts.end ? fmtTime(+job.opts.end) : 'fin'}` : '';
-    const label = (job.opts.mode === 'audio' ? job.opts.audio.toUpperCase() : job.opts.mode === 'image' ? 'Image' : `${job.opts.codec === 'prores' ? 'MOV' : job.opts.container.toUpperCase()} ${job.opts.quality ? qualityLabel(job.opts.quality) : 'max'}`) + passage;
+    const squeeze = job.opts.mode === 'video' && job.opts.compress ? ` · −${job.opts.compress} %` : '';
+    const label = (job.opts.mode === 'audio' ? job.opts.audio.toUpperCase() : job.opts.mode === 'image' ? 'Image' : `${job.opts.codec === 'prores' ? 'MOV' : job.opts.container.toUpperCase()} ${job.opts.quality ? qualityLabel(job.opts.quality) : 'max'}`) + passage + squeeze;
     const actions: Node[] = [];
     if (job.state === 'running') {
       const stop = h('button', { type: 'button', class: 'icon-btn icon-btn--sm', title: 'Annuler' }, icon('stop', 13));
@@ -482,7 +544,7 @@ export async function mountMedia(root: HTMLElement) {
     const pct = job.state === 'done' ? 100 : e.percent ?? 0;
     const line =
       job.state === 'done'
-        ? `Terminé · ${formatBytes(job.size ?? 0)}`
+        ? `Terminé · ${job.opts.mode === 'video' ? formatMB(job.size ?? 0) : formatBytes(job.size ?? 0)}`
         : job.state === 'cancelled'
           ? 'Annulé'
           : job.state === 'error'

@@ -4,10 +4,10 @@ Quatre modules dans un panneau latéral. Tout tourne sur ton ordinateur : sans I
 
 | Module | Ce qu'il fait |
 |---|---|
-| **Convertir** | Tous formats → JPG, WebP, AVIF, PNG, GIF, JPEG XL, TIFF, PDF (+ PDF unique), BMP, ICO, SVG vectorisé, QOI. Compression en % ou **poids cible**, redimensionnement, lots, ZIP. Entrée : HEIC, PSD, TIFF, PDF, RAW, JPEG XL, SVG… |
+| **Convertir** | Tous formats → JPG, WebP, AVIF, PNG, GIF, JPEG XL, TIFF, PDF (+ PDF unique), BMP, ICO, SVG vectorisé, QOI. Compression en % ou **poids cible**, redimensionnement, lots, ZIP. Entrée : HEIC, PSD, TIFF, PDF, RAW, JPEG XL, SVG… **Vidéos** (MP4, MOV, MKV, WebM…) : compression en % ou vers un poids cible en Mo, encodage en deux passes (meilleure qualité pour le poids), H.264 ou HEVC, 4K / 1080p / 720p ; HDR gardé en HEVC 10 bits |
 | **Couleurs** | Pipette **sur tout l'écran** (même hors du navigateur), HEX copié automatiquement sans #, RGB, CMJN, HSL, historique, nuancier **.ase** |
 | **Scrap** | Toutes les images d'une page (meilleure résolution, SVG intégrés, fonds CSS…), **capture de page entière**, **image vidéo en résolution native** |
-| **Lien** | Colle un lien (YouTube, TikTok, Instagram, X, Vimeo…) → vidéo jusqu'en 4K/8K (H.264, HEVC, ProRes, original), audio MP3 / WAV 24 bits / AIFF / FLAC…, miniature. **Passage** de tel moment à tel moment (bouton ⏱ = position de la vidéo en cours, `?t=` / `start=` / `end=` des liens lus automatiquement) |
+| **Lien** | Colle un lien (YouTube, TikTok, Instagram, X, Vimeo…) → vidéo jusqu'en 4K/8K (H.264, HEVC, ProRes, original), audio MP3 / WAV 24 bits / AIFF / FLAC…, miniature. **Passage** de tel moment à tel moment (bouton ⏱ = position de la vidéo en cours, `?t=` / `start=` / `end=` des liens lus automatiquement). Poids estimé avant téléchargement, option **Compresser** (curseur en %) |
 
 ## Installer
 
