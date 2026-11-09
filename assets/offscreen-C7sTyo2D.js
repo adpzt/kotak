@@ -1,0 +1,1 @@
+import"./modulepreload-polyfill-P2Xu9kJm.js";chrome.runtime.onMessage.addListener((e,t,n)=>{if(e?.type!==`kotak-offscreen-copy`)return;let r=document.getElementById(`buffer`);r.value=e.text,r.select(),n({ok:document.execCommand(`copy`)})});

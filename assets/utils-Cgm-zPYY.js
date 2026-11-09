@@ -1,0 +1,1 @@
+function e(e,t,n={}){let r;return t&&(r=(e,n)=>{let r=new WebAssembly.Instance(t,e);return n(r),r.exports}),e({noInitialRun:!0,instantiateWasm:r,...n})}export{e as t};
